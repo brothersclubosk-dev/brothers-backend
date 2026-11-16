@@ -24,6 +24,12 @@ type RefreshSessionRepository interface {
 	RevokeRefreshSession(context.Context, string, string) error
 }
 
+type AdminPasswordRepository interface {
+	GetAdminPasswordHash(context.Context) ([]byte, error)
+	EnsureAdminPasswordHash(context.Context, []byte) error
+	ChangeAdminPassword(context.Context, []byte, []byte) error
+}
+
 type TokenPair struct {
 	TokenType    string `json:"tokenType"`
 	AccessToken  string `json:"accessToken"`
@@ -44,14 +50,16 @@ type AuthService struct {
 	passwordHash []byte
 	secret       []byte
 	sessions     RefreshSessionRepository
+	passwords    AdminPasswordRepository
 	accessTTL    time.Duration
 	refreshTTL   time.Duration
 	now          func() time.Time
 }
 
-func NewAuthService(username string, passwordHash, secret []byte, sessions RefreshSessionRepository) *AuthService {
+func NewAuthService(username string, passwordHash, secret []byte, sessions RefreshSessionRepository, passwords AdminPasswordRepository) *AuthService {
 	return &AuthService{
 		username: username, passwordHash: passwordHash, secret: secret, sessions: sessions,
+		passwords: passwords,
 		accessTTL: 15 * time.Minute, refreshTTL: 7 * 24 * time.Hour, now: time.Now,
 	}
 }
@@ -60,9 +68,35 @@ func HashPassword(password string) ([]byte, error) {
 	return bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 }
 
+func (s *AuthService) InitializeAdminPassword(ctx context.Context) error {
+	_, err := s.passwords.GetAdminPasswordHash(ctx)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, domain.ErrNotFound) {
+		return fmt.Errorf("load admin password hash: %w", err)
+	}
+	if len(s.passwordHash) == 0 {
+		return errors.New("ADMIN_PASSWORD is required because no admin password is stored in the database")
+	}
+	if err := s.passwords.EnsureAdminPasswordHash(ctx, s.passwordHash); err != nil {
+		return fmt.Errorf("initialize admin password hash: %w", err)
+	}
+	return nil
+}
+
 func (s *AuthService) Login(ctx context.Context, username, password string) (TokenPair, error) {
-	passwordErr := bcrypt.CompareHashAndPassword(s.passwordHash, []byte(password))
-	if username != s.username || passwordErr != nil {
+	if username != s.username {
+		return TokenPair{}, ErrUnauthorized
+	}
+	passwordHash, err := s.passwords.GetAdminPasswordHash(ctx)
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			return TokenPair{}, ErrUnauthorized
+		}
+		return TokenPair{}, fmt.Errorf("load admin password hash: %w", err)
+	}
+	if bcrypt.CompareHashAndPassword(passwordHash, []byte(password)) != nil {
 		return TokenPair{}, ErrUnauthorized
 	}
 	pair, refreshHash, expiresAt, err := s.issueTokens(username)
@@ -73,6 +107,30 @@ func (s *AuthService) Login(ctx context.Context, username, password string) (Tok
 		return TokenPair{}, fmt.Errorf("save refresh session: %w", err)
 	}
 	return pair, nil
+}
+
+func (s *AuthService) ChangePassword(ctx context.Context, currentPassword, newPassword string) error {
+	if len([]byte(newPassword)) < 12 || len([]byte(newPassword)) > 72 {
+		return fmt.Errorf("%w: password must be between 12 and 72 bytes", domain.ErrInvalid)
+	}
+	currentHash, err := s.passwords.GetAdminPasswordHash(ctx)
+	if err != nil {
+		return fmt.Errorf("load admin password hash: %w", err)
+	}
+	if bcrypt.CompareHashAndPassword(currentHash, []byte(currentPassword)) != nil {
+		return ErrUnauthorized
+	}
+	newHash, err := HashPassword(newPassword)
+	if err != nil {
+		return fmt.Errorf("hash new admin password: %w", err)
+	}
+	if err := s.passwords.ChangeAdminPassword(ctx, currentHash, newHash); err != nil {
+		if errors.Is(err, ErrUnauthorized) {
+			return ErrUnauthorized
+		}
+		return fmt.Errorf("save new admin password: %w", err)
+	}
+	return nil
 }
 
 func (s *AuthService) Refresh(ctx context.Context, refreshToken string) (TokenPair, error) {

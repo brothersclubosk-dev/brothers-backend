@@ -25,7 +25,10 @@ func TestContentAndAuthRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	auth := application.NewAuthService("admin", passwordHash, []byte("01234567890123456789012345678901"), repository)
+	auth := application.NewAuthService("admin", passwordHash, []byte("01234567890123456789012345678901"), repository, repository)
+	if err := auth.InitializeAdminPassword(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	api := presentation.NewAPI(application.NewContentService(repository), auth, []string{"http://localhost:5173"})
 	server := httptest.NewServer(api.Handler())
 	defer server.Close()
@@ -60,6 +63,24 @@ func TestContentAndAuthRoutes(t *testing.T) {
 	}
 	response.Body.Close()
 
+	response = request(t, server.Client(), http.MethodPut, server.URL+"/api/v1/auth/password",
+		`{"currentPassword":"test-password-long-enough","newPassword":"another-password-long"}`, tokens.AccessToken)
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("change password status = %d, want %d", response.StatusCode, http.StatusNoContent)
+	}
+	response.Body.Close()
+
+	response = request(t, server.Client(), http.MethodPost, server.URL+"/api/v1/auth/login",
+		`{"username":"admin","password":"another-password-long"}`, "")
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("login with changed password status = %d, want %d", response.StatusCode, http.StatusOK)
+	}
+	var newTokens application.TokenPair
+	if err := json.NewDecoder(response.Body).Decode(&newTokens); err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+
 	response = request(t, server.Client(), http.MethodGet, server.URL+"/api/v1/zones", "", "")
 	var zones []json.RawMessage
 	if response.StatusCode != http.StatusOK {
@@ -73,7 +94,7 @@ func TestContentAndAuthRoutes(t *testing.T) {
 		t.Fatalf("zone count = %d, want 7", len(zones))
 	}
 
-	body, err := json.Marshal(map[string]string{"refreshToken": tokens.RefreshToken})
+	body, err := json.Marshal(map[string]string{"refreshToken": newTokens.RefreshToken})
 	if err != nil {
 		t.Fatal(err)
 	}

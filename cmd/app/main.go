@@ -27,13 +27,20 @@ func run() error {
 	username := os.Getenv("ADMIN_USERNAME")
 	password := os.Getenv("ADMIN_PASSWORD")
 	jwtSecret := os.Getenv("JWT_SECRET")
-	if username == "" || len(password) < 12 || len(jwtSecret) < 32 {
-		return errors.New("ADMIN_USERNAME, ADMIN_PASSWORD (at least 12 characters), and JWT_SECRET (at least 32 characters) are required")
+	if username == "" || len(jwtSecret) < 32 {
+		return errors.New("ADMIN_USERNAME and JWT_SECRET (at least 32 characters) are required")
 	}
 
-	passwordHash, err := application.HashPassword(password)
-	if err != nil {
-		return fmt.Errorf("hash admin password: %w", err)
+	var passwordHash []byte
+	if password != "" {
+		if len(password) < 12 {
+			return errors.New("ADMIN_PASSWORD must be at least 12 characters when provided")
+		}
+		var err error
+		passwordHash, err = application.HashPassword(password)
+		if err != nil {
+			return fmt.Errorf("hash admin password: %w", err)
+		}
 	}
 	databasePath := os.Getenv("DATABASE_PATH")
 	if databasePath == "" {
@@ -51,7 +58,13 @@ func run() error {
 		}
 	}()
 
-	auth := application.NewAuthService(username, passwordHash, []byte(jwtSecret), repository)
+	auth := application.NewAuthService(username, passwordHash, []byte(jwtSecret), repository, repository)
+	passwordContext, cancelPassword := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := auth.InitializeAdminPassword(passwordContext); err != nil {
+		cancelPassword()
+		return err
+	}
+	cancelPassword()
 	content := application.NewContentService(repository)
 	api := presentation.NewAPI(content, auth, strings.Split(os.Getenv("CORS_ALLOWED_ORIGINS"), ","))
 

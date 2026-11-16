@@ -270,6 +270,57 @@ func (r *Repository) DeleteZone(ctx context.Context, id string) error {
 	return nil
 }
 
+func (r *Repository) GetAdminPasswordHash(ctx context.Context) ([]byte, error) {
+	var passwordHash []byte
+	err := r.db.QueryRowContext(ctx,
+		`SELECT password_hash FROM admin_credentials WHERE id = 1`).Scan(&passwordHash)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, domain.ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get admin password hash: %w", err)
+	}
+	return passwordHash, nil
+}
+
+func (r *Repository) EnsureAdminPasswordHash(ctx context.Context, passwordHash []byte) error {
+	if _, err := r.db.ExecContext(ctx, `
+		INSERT INTO admin_credentials (id, password_hash) VALUES (1, ?)
+		ON CONFLICT(id) DO NOTHING`, passwordHash); err != nil {
+		return fmt.Errorf("initialize admin password hash: %w", err)
+	}
+	return nil
+}
+
+func (r *Repository) ChangeAdminPassword(ctx context.Context, currentHash, newHash []byte) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin password change transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	result, err := tx.ExecContext(ctx, `
+		UPDATE admin_credentials SET password_hash = ?
+		WHERE id = 1 AND password_hash = ?`, newHash, currentHash)
+	if err != nil {
+		return fmt.Errorf("update admin password hash: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("check admin password update: %w", err)
+	}
+	if rows != 1 {
+		return domain.ErrUnauthorized
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM refresh_sessions`); err != nil {
+		return fmt.Errorf("revoke refresh sessions after password change: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit password change: %w", err)
+	}
+	return nil
+}
+
 func (r *Repository) CreateRefreshSession(ctx context.Context, tokenHash, username string, expiresAt time.Time) error {
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO refresh_sessions (token_hash, username, expires_at) VALUES (?, ?, ?)`,

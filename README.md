@@ -7,11 +7,11 @@ REST API for the public site data and a protected admin interface. The API uses 
 Required environment variables:
 
 - `ADMIN_USERNAME` — initial admin login.
-- `ADMIN_PASSWORD` — initial admin password, at least 12 characters.
 - `JWT_SECRET` — secret for signing JWTs, at least 32 characters.
 
 Optional:
 
+- `ADMIN_PASSWORD` — initial admin password, at least 12 characters. Required only when the database does not already contain an admin password.
 - `HTTP_ADDR` — listen address; defaults to `0.0.0.0:8080`.
 - `DATABASE_PATH` — SQLite file; defaults to `data/brothers.db`.
 - `CORS_ALLOWED_ORIGINS` — comma-separated exact browser origins, for example `https://admin.example.com,http://localhost:5173`.
@@ -20,7 +20,7 @@ PowerShell example:
 
 ```powershell
 $env:ADMIN_USERNAME = "admin"
-$env:ADMIN_PASSWORD = "replace-with-a-long-password"
+$env:ADMIN_PASSWORD = "replace-with-a-long-password" # required only on first run
 $env:JWT_SECRET = "replace-with-at-least-32-random-characters"
 $env:CORS_ALLOWED_ORIGINS = "http://localhost:5173"
 go run ./cmd/app
@@ -35,6 +35,9 @@ Content `GET` routes and `GET /healthz` are public. Login and refresh use the cr
 - `POST /api/v1/auth/login` — body `{"username":"admin","password":"..."}`; returns `accessToken`, `refreshToken`, `tokenType`, and `expiresIn` (seconds).
 - `POST /api/v1/auth/refresh` — body `{"refreshToken":"..."}`; returns a new token pair. The old refresh token is invalidated on rotation.
 - `POST /api/v1/auth/logout` — body `{"refreshToken":"..."}`; revokes that refresh token.
+- `PUT /api/v1/auth/password` — protected by an access token; body `{"currentPassword":"...","newPassword":"..."}`; changes the admin password and revokes all refresh tokens. New passwords must be 12–72 bytes.
+
+The password is stored as a bcrypt hash in SQLite, never in reversible/encrypted form. On first startup, `ADMIN_PASSWORD` is hashed and saved only if the database has no admin password yet; afterwards the database hash is authoritative, so changing or omitting `ADMIN_PASSWORD` does not overwrite a changed password. A password change also revokes all refresh tokens. Existing access tokens remain valid until their short expiry (15 minutes).
 
 Send an `Authorization` header using the `Bearer` scheme and the access token to protected endpoints. Access tokens expire in 15 minutes; refresh tokens expire in 7 days and their hashes are persisted in SQLite.
 

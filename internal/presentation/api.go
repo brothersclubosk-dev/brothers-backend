@@ -35,6 +35,7 @@ func (api *API) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/auth/login", api.login)
 	mux.HandleFunc("POST /api/v1/auth/refresh", api.refresh)
 	mux.HandleFunc("POST /api/v1/auth/logout", api.logout)
+	mux.Handle("PUT /api/v1/auth/password", api.requireAuth(http.HandlerFunc(api.changePassword)))
 
 	mux.HandleFunc("GET /api/v1/config", api.getConfig)
 	mux.Handle("PUT /api/v1/config", api.requireAuth(http.HandlerFunc(api.updateConfig)))
@@ -93,6 +94,21 @@ func (api *API) logout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := api.auth.Logout(r.Context(), request.RefreshToken); err != nil {
+		api.writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (api *API) changePassword(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		CurrentPassword string `json:"currentPassword"`
+		NewPassword     string `json:"newPassword"`
+	}
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+	if err := api.auth.ChangePassword(r.Context(), request.CurrentPassword, request.NewPassword); err != nil {
 		api.writeError(w, err)
 		return
 	}

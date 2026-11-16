@@ -57,3 +57,8 @@ CREATE TABLE IF NOT EXISTS refresh_sessions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_refresh_sessions_expiry ON refresh_sessions(expires_at);
+
+CREATE TABLE IF NOT EXISTS admin_credentials (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    password_hash BLOB NOT NULL
+);
